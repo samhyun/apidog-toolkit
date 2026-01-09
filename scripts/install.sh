@@ -67,8 +67,7 @@ echo "1. Configure environment:"
 echo "   cp $TOOLKIT_DIR/.env.example $TOOLKIT_DIR/mcp-server/.env"
 echo "   # Edit .env and add APIDOG_ACCESS_TOKEN"
 echo ""
-echo "2. Add MCP server to Claude settings:"
-echo "   Edit ~/.claude/settings.json:"
+echo "2. Add MCP server to ~/.claude.json:"
 echo ""
 echo '   {
      "mcpServers": {
@@ -81,7 +80,6 @@ echo '   {
 echo ""
 echo "3. Start the MCP server:"
 echo "   cd $TOOLKIT_DIR/mcp-server && pnpm start"
-echo "   # Or use: $TOOLKIT_DIR/mcp-server/scripts/restart.sh"
 echo ""
 echo "4. Test in Claude:"
 echo "   /api:help"
