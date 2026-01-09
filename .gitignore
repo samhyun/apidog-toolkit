@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+mcp-server/dist/
+
+# Environment files
+.env
+mcp-server/.env
+
+# Logs
+*.log
+/tmp/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# pnpm
+.pnpm-store/
