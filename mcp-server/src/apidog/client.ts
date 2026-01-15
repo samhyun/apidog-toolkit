@@ -92,6 +92,15 @@ function parseOpenAPISpec(spec: any): ProjectData {
   for (const [path, methods] of Object.entries(paths)) {
     for (const [method, details] of Object.entries(methods as Record<string, any>)) {
       if (['get', 'post', 'put', 'patch', 'delete', 'options', 'head'].includes(method)) {
+        // responses 파라미터 검증 (외부 스펙 파싱 시 에러 대신 경고만 로깅)
+        let responses = details.responses;
+        try {
+          responses = normalizeResponsesSafe(details.responses);
+        } catch (e) {
+          console.warn(`[parseOpenAPISpec] Warning for ${method.toUpperCase()} ${path}: ${(e as Error).message}`);
+          responses = { "200": { description: "Successful response" } };
+        }
+
         endpoints.push({
           id: details.operationId || `${method}-${path}`,
           name: details.summary || details.operationId || path,
@@ -100,7 +109,7 @@ function parseOpenAPISpec(spec: any): ProjectData {
           description: details.description,
           parameters: details.parameters,
           requestBody: details.requestBody,
-          responses: details.responses
+          responses
         });
       }
     }
@@ -115,6 +124,43 @@ function parseOpenAPISpec(spec: any): ProjectData {
       description: spec.info?.description
     }
   };
+}
+
+/**
+ * responses 검증 (에러를 던지지 않는 안전한 버전)
+ * 외부 스펙 파싱 시 사용
+ */
+function normalizeResponsesSafe(responses: any): Record<string, any> {
+  const fallback = { "200": { description: "Successful response" } };
+
+  if (responses === undefined || responses === null) {
+    return fallback;
+  }
+
+  if (typeof responses === 'object' && !Array.isArray(responses)) {
+    if (Object.keys(responses).length === 0) {
+      return fallback;
+    }
+    return responses;
+  }
+
+  // 문자열인 경우 JSON 파싱 시도
+  if (typeof responses === 'string') {
+    if (responses.trim() === '') {
+      return fallback;
+    }
+    try {
+      const parsed = JSON.parse(responses);
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+        return parsed;
+      }
+    } catch {
+      // 파싱 실패 시 기본값 반환
+    }
+    return fallback;
+  }
+
+  return fallback;
 }
 
 export async function loadProjectData(): Promise<ProjectData> {
@@ -286,7 +332,8 @@ type OverwriteBehavior = "OVERWRITE_EXISTING" | "AUTO_MERGE" | "KEEP_EXISTING" |
 interface ProjectContext {
   serviceName: string;      // 예: "aura-assistant"
   projectName?: string;     // 예: "backend", "frontend"
-  description?: string;     // 폴더 문서 (마크다운)
+  // description 필드 제거됨: addFolderDoc이 deprecated이므로
+  // 폴더 문서는 addEndpoint의 tags에 { name, description } 형태로 추가
 }
 
 // Tag 타입: 문자열 또는 description 포함 객체
@@ -299,32 +346,120 @@ interface TagObject {
 
 let currentContext: ProjectContext | null = null;
 
+// ============================================
+// responses 파라미터 검증 및 정규화
+// ============================================
+
+/**
+ * OpenAPI responses 객체 검증 및 정규화
+ *
+ * 버그 방지: responses가 문자열로 전달되면 각 문자가 HTTP 상태 코드로 해석되는 버그 발생
+ * 이 함수는 responses가 올바른 객체 형태인지 검증하고, 문자열이면 파싱을 시도합니다.
+ *
+ * @param responses - 검증할 responses 파라미터
+ * @param fallback - 검증 실패 시 반환할 기본값 (기본: { "200": { description: "Successful response" } })
+ * @returns 정규화된 responses 객체
+ * @throws responses가 유효하지 않은 형태일 경우 에러 발생
+ */
+function normalizeResponses(
+  responses: any,
+  fallback: Record<string, any> = { "200": { description: "Successful response" } }
+): Record<string, any> {
+  // undefined 또는 null이면 기본값 반환
+  if (responses === undefined || responses === null) {
+    return fallback;
+  }
+
+  // 이미 올바른 객체 형태인 경우
+  if (typeof responses === 'object' && !Array.isArray(responses)) {
+    // 빈 객체면 기본값 반환
+    if (Object.keys(responses).length === 0) {
+      return fallback;
+    }
+
+    // 키가 HTTP 상태 코드 형태인지 검증 (숫자 또는 "default")
+    const keys = Object.keys(responses);
+    const validStatusCodePattern = /^[1-5][0-9]{2}$|^default$/;
+
+    const hasValidKeys = keys.some(key => validStatusCodePattern.test(key));
+    if (!hasValidKeys) {
+      console.warn(
+        `[normalizeResponses] Warning: responses object has no valid HTTP status code keys. ` +
+        `Keys found: ${keys.join(', ')}. Using as-is but this may cause issues.`
+      );
+    }
+
+    return responses;
+  }
+
+  // 문자열인 경우 - JSON 파싱 시도
+  if (typeof responses === 'string') {
+    // 빈 문자열이면 기본값 반환
+    if (responses.trim() === '') {
+      return fallback;
+    }
+
+    try {
+      const parsed = JSON.parse(responses);
+
+      // 파싱 결과가 객체인지 확인
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+        console.warn(
+          `[normalizeResponses] Warning: responses was passed as a string and has been parsed. ` +
+          `This may indicate a bug in the calling code.`
+        );
+        return normalizeResponses(parsed, fallback); // 재귀 호출로 추가 검증
+      } else {
+        throw new Error(
+          `responses must be an object with HTTP status codes as keys, ` +
+          `but got ${Array.isArray(parsed) ? 'array' : typeof parsed} after parsing`
+        );
+      }
+    } catch (parseError) {
+      // JSON 파싱 실패 - 이게 버그 리포트의 핵심 원인
+      throw new Error(
+        `responses must be an object, not a string. ` +
+        `Received string value that cannot be parsed as JSON. ` +
+        `This will cause each character to be interpreted as a separate HTTP status code. ` +
+        `Please pass responses as an object: { "200": { description: "Success" } }`
+      );
+    }
+  }
+
+  // 배열인 경우 - 에러
+  if (Array.isArray(responses)) {
+    throw new Error(
+      `responses must be an object with HTTP status codes as keys, not an array. ` +
+      `Example: { "200": { description: "Success" }, "400": { description: "Bad Request" } }`
+    );
+  }
+
+  // 기타 타입 (number, boolean 등) - 에러
+  throw new Error(
+    `responses must be an object, but received ${typeof responses}. ` +
+    `Example: { "200": { description: "Success" } }`
+  );
+}
+
 /**
  * 현재 프로젝트 컨텍스트 설정
  * 이후 모든 엔드포인트/스키마 작업에 자동 적용
+ *
+ * 폴더 문서를 추가하려면 addEndpoint의 tags에 { name, description } 형태로 전달하세요.
+ * 예: tags: [{ name: "Users", description: "# User API\n\n사용자 관련 API" }]
  */
-export async function setProjectContext(context: ProjectContext | null): Promise<string> {
+export function setProjectContext(context: ProjectContext | null): string {
   currentContext = context;
   if (context) {
     const folderPath = context.projectName
       ? `${context.serviceName}/${context.projectName}`
       : context.serviceName;
 
-    // description이 있으면 폴더 문서도 생성
-    let folderDocResult = null;
-    if (context.description) {
-      try {
-        folderDocResult = await addFolderDoc(folderPath, context.description);
-      } catch (e: any) {
-        folderDocResult = { error: e.message };
-      }
-    }
-
     return JSON.stringify({
       success: true,
       message: `Project context set: ${folderPath}`,
       context,
-      folderDocResult
+      hint: "To add folder documentation, use addEndpoint with tags: [{ name: 'FolderName', description: '# Docs' }]"
     }, null, 2);
   } else {
     return JSON.stringify({
@@ -502,6 +637,9 @@ export async function addEndpoint(endpoint: {
   // description이 있는 태그들만 tags 섹션에 포함
   const tagsWithDescription = tagObjects.filter(t => t.description);
 
+  // responses 파라미터 검증 및 정규화 (버그 방지)
+  const normalizedResponses = normalizeResponses(endpoint.responses);
+
   // OpenAPI 형식으로 변환
   const spec: any = {
     openapi: "3.0.0",
@@ -517,9 +655,7 @@ export async function addEndpoint(endpoint: {
           tags: tagNames, // 태그 이름 배열
           parameters: endpoint.parameters,
           requestBody: endpoint.requestBody,
-          responses: endpoint.responses || {
-            "200": { description: "Successful response" }
-          }
+          responses: normalizedResponses
         }
       }
     }
@@ -585,6 +721,9 @@ export async function updateEndpoint(endpoint: {
   const { tagNames, tagObjects } = applyContextToTags(endpoint.tags);
   const tagsWithDescription = tagObjects.filter(t => t.description);
 
+  // responses 파라미터 검증 및 정규화 (버그 방지)
+  const normalizedResponses = normalizeResponses(endpoint.responses);
+
   const spec: any = {
     openapi: "3.0.0",
     info: {
@@ -599,9 +738,7 @@ export async function updateEndpoint(endpoint: {
           tags: tagNames, // 컨텍스트 자동 적용
           parameters: endpoint.parameters,
           requestBody: endpoint.requestBody,
-          responses: endpoint.responses || {
-            "200": { description: "Successful response" }
-          }
+          responses: normalizedResponses
         }
       }
     }
@@ -768,12 +905,17 @@ function buildOpenAPISpec(
     if (!paths[ep.path]) {
       paths[ep.path] = {};
     }
+    // responses 파라미터 검증 및 정규화 (버그 방지)
+    const normalizedResponses = normalizeResponses(
+      ep.responses,
+      { "200": { description: "Success" } }
+    );
     paths[ep.path][ep.method.toLowerCase()] = {
       summary: ep.name,
       description: ep.description,
       parameters: ep.parameters,
       requestBody: ep.requestBody,
-      responses: ep.responses || { "200": { description: "Success" } }
+      responses: normalizedResponses
     };
   }
 

@@ -30,7 +30,7 @@ export function listTools() {
       // ===== 컨텍스트 도구 =====
       {
         name: "apidog_set_context",
-        description: "Set project context for folder organization. All subsequent add/update operations will use this context for automatic folder tagging. Optionally add folder documentation.",
+        description: "Set project context for folder organization. All subsequent add/update operations will use this context for automatic folder tagging. For folder documentation, use apidog_add_endpoint with tags containing {name, description}.",
         inputSchema: {
           type: "object",
           properties: {
@@ -41,10 +41,6 @@ export function listTools() {
             projectName: {
               type: "string",
               description: "Project/module name within the service (e.g., 'backend', 'frontend', 'api-gateway')"
-            },
-            description: {
-              type: "string",
-              description: "Markdown documentation for the folder (e.g., '# My API\\n\\n## Auth\\nBearer token required')"
             }
           },
           required: ["serviceName"]
@@ -418,10 +414,9 @@ export async function callTool({ name, arguments: args }: { name: string; argume
     switch (name) {
       // ===== 컨텍스트 =====
       case "apidog_set_context": {
-        const result = await setProjectContext({
+        const result = setProjectContext({
           serviceName: args?.serviceName,
-          projectName: args?.projectName,
-          description: args?.description
+          projectName: args?.projectName
         });
         return {
           content: [{ type: "text", text: result }]
